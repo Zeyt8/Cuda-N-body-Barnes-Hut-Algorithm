@@ -32,7 +32,7 @@ NBodySim::NBodySim(int bodyCount)
 	std::uniform_real_distribution<float> massDist(100, 200);
 	for (int i = 0; i < bodyCount; i++)
 	{
-		_h_particleInfos[i] = make_float4(posDist(rng), posDist(rng), posDist(rng), massDist(rng));
+		_h_particleInfos[i] = make_float4(posDist(rng), posDist(rng), 0, massDist(rng));
 	}
 
 	cudaMemcpy(_d_particleInfos, _h_particleInfos, bodyCount * sizeof(float4), cudaMemcpyDefault);
@@ -80,7 +80,7 @@ void NBodySim::Simulate()
 		cudaDeviceSynchronize();
 
 		int dummyKey1 = 0;
-		void* kernelArgs[] = { &_headFlags, &len, &dummyKey, &_groupStarts };
+		void* kernelArgs[] = { &_headFlags, &len, &dummyKey1, &_groupStarts };
 		cudaLaunchCooperativeKernel(compactIndices<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
 		cudaDeviceSynchronize();
 
