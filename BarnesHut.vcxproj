@@ -101,6 +101,7 @@
     <ClInclude Include="src\rendering\RenderSurface.h" />
     <ClInclude Include="src\rendering\shader_utils.h" />
     <ClInclude Include="src\rendering\SimDraw.h" />
+    <ClInclude Include="src\simulation\Cell.h" />
     <ClInclude Include="src\simulation\NBodySim.h" />
     <ClInclude Include="src\simulation\NBodySimKernels.h" />
     <ClInclude Include="src\simulation\utils.h" />

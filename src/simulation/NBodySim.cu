@@ -11,7 +11,7 @@
 
 const int domainMin = 0;
 const int domainMax = 1000;
-const int Nleaf = 16;
+const int NLeaf = 16;
 
 NBodySim::NBodySim(int bodyCount)
 {
@@ -21,17 +21,27 @@ NBodySim::NBodySim(int bodyCount)
 
 	cudaEventRecord(start);
 
-
 	_bodyCount = bodyCount;
 
 	cudaMallocHost(&_h_particleInfos, _bodyCount * sizeof(float4));
 	cudaMalloc(&_d_particleInfos, _bodyCount * sizeof(float4));
 	cudaMalloc(&_keys, _bodyCount * sizeof(uint64_t));
-	cudaMalloc(&_flagged, _bodyCount * sizeof(bool));
+	cudaMalloc(&_flagged, _bodyCount * sizeof(int));
 	cudaMalloc(&_activeList, _bodyCount * sizeof(int));
 	cudaMalloc(&_maskedKeys, _bodyCount * sizeof(uint64_t));
 	cudaMalloc(&_headFlags, _bodyCount * sizeof(int));
 	cudaMalloc(&_groupStarts, _bodyCount * sizeof(int));
+	cudaMalloc(&_numGroups, sizeof(int));
+	cudaMemset(_numGroups, 0, sizeof(int));
+	cudaMalloc(&_newLen, sizeof(int));
+	cudaMemset(_newLen, 0, sizeof(int));
+	cudaMalloc(&_cells, _bodyCount * sizeof(Cell));
+	cudaMalloc(&_cellCount, sizeof(int));
+	cudaMemset(_cellCount, 0, sizeof(int));
+	cudaMalloc(&_leafParticles, _bodyCount * sizeof(int));
+	cudaMalloc(&_leafParticleCount, sizeof(int));
+	cudaMemset(_leafParticleCount, 0, sizeof(int));
+	cudaMalloc(&_flaggedTemp, _bodyCount * sizeof(int));
 
 	std::random_device rd;
 	std::mt19937 rng(rd());
@@ -66,6 +76,13 @@ NBodySim::~NBodySim()
 	cudaFree(_maskedKeys);
 	cudaFree(_headFlags);
 	cudaFree(_groupStarts);
+	cudaFree(_numGroups);
+	cudaFree(_newLen);
+	cudaFree(_cells);
+	cudaFree(_cellCount);
+	cudaFree(_leafParticles);
+	cudaFree(_leafParticleCount);
+	cudaFree(_flaggedTemp);
 }
 
 void NBodySim::Simulate()
@@ -82,11 +99,10 @@ void NBodySim::Simulate()
 	cudaDeviceSynchronize();
 
 	void* kernelArgs[] = { &_d_particleInfos, &_keys, &_bodyCount };
-	cudaLaunchCooperativeKernel(radixSortByKey<float4, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+	cudaLaunchCooperativeKernel(k_radixSortByKey<float4, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(endMorton);
-
 
 	cudaEvent_t startPartition, endPartition;
 	cudaEventCreate(&startPartition);
@@ -94,63 +110,46 @@ void NBodySim::Simulate()
 
 	cudaEventRecord(startPartition);
 
-	bool* _flagged;
 	initActiveList<<<blocks, threadsPerBlock>>>(_activeList, _bodyCount);
 	int level = 0;
 	int len = _bodyCount;
 	while (len > 0 && level < 20)
 	{
+		blocks = cuda::ceil_div(len, threadsPerBlock);
+
+		cudaMemset(_numGroups, 0, sizeof(int));
+		cudaMemset(_newLen, 0, sizeof(int));
+		cudaMemset(_flagged, 0, _bodyCount * sizeof(bool));
+
 		getMaskedValues<<<blocks, threadsPerBlock>>>(_keys, _activeList, len, level, _maskedKeys);
 		cudaDeviceSynchronize();
 
 		void* kernelArgs1[] = { &_activeList, &_maskedKeys, &len };
-		cudaLaunchCooperativeKernel(radixSortByKey<int, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs1);
+		cudaLaunchCooperativeKernel(k_radixSortByKey<int, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs1);
 		cudaDeviceSynchronize();
 
 		setHeadFlags<<<blocks, threadsPerBlock>>>(_maskedKeys, len, _headFlags);
 		cudaDeviceSynchronize();
 
-		int dummyKey1 = 0;
-		void* kernelArgs2[] = { &_headFlags, &len, &dummyKey1, &_groupStarts };
-		cudaLaunchCooperativeKernel(compactIndices<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs2);
+		void* kernelArgs2[] = { &_headFlags, &len, &_groupStarts, &_numGroups };
+		cudaLaunchCooperativeKernel(k_compactIndices<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs2);
 		cudaDeviceSynchronize();
 
-		// TODO: this is wrong, _headFlags is on the GPU
-		//int numGroups = 0;
-		//for (int i = 0; i < len; i++)
-		//{
-		//	if (_headFlags[i])
-		//	{
-		//		numGroups++;
-		//	}
-		//}
-		//int* groupSizes = _headFlags;
-		//getGroupSizes<<<blocks, threadsPerBlock>>>(_groupStarts, numGroups, len, groupSizes);
-		//cudaDeviceSynchronize();
-		//
-		//classifyGroups<<<blocks, threadsPerBlock>>>(_activeList, _groupStarts, groupSizes, numGroups);
-		//cudaDeviceSynchronize();
-		//
-		//void* kernelArgs3[] = { &_activeList, &len, &_flagged };
-		//cudaLaunchCooperativeKernel(setFlagged, dim3(blocks), dim3(threadsPerBlock), kernelArgs3);
-		//cudaDeviceSynchronize();
+		int* groupSizes = _headFlags;
+		getGroupSizes<<<blocks, threadsPerBlock>>>(_groupStarts, _numGroups, len, groupSizes);
+		cudaDeviceSynchronize();
+		
+		classifyGroups<<<blocks, threadsPerBlock>>>(_activeList, _groupStarts, groupSizes, _numGroups, _maskedKeys, level, NLeaf, _flagged, _cells, _cellCount, _leafParticles, _leafParticleCount);
+		cudaDeviceSynchronize();
+		
+		setCompactFlags<<<blocks, threadsPerBlock>>>(_activeList, len, _flagged, _flaggedTemp);
+		cudaDeviceSynchronize();
 
-		// TODO: this is wrong, _flagged is on the GPU
-		//int newLen = 0;
-		//for (int i = 0; i < len; i++)
-		//{
-		//	if (_flagged[i])
-		//	{
-		//		newLen++;
-		//	}
-		//}
-		//
-		//bool dummyKey2 = 0;
-		//void* kernelArgs4[] = { &_activeList, &_flagged, &len, &dummyKey2 };
-		//cudaLaunchCooperativeKernel(compact<int, bool>, dim3(blocks), dim3(threadsPerBlock), kernelArgs4);
-		//cudaDeviceSynchronize();
-		//
-		//len = newLen;
+		void* kernelArgs4[] = { &_activeList, &_flaggedTemp, &len, &_newLen };
+		cudaLaunchCooperativeKernel(k_compact<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs4);
+		cudaDeviceSynchronize();
+		
+		cudaMemcpy(&len, _newLen, sizeof(int), cudaMemcpyDefault);
 
 		level++;
 	}

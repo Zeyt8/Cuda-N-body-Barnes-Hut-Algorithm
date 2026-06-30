@@ -70,7 +70,21 @@ __device__ void splitAndSort(T* __restrict__ values, Key* __restrict__ keys, con
 }
 
 template<typename T, typename Key>
-__device__ void compact(T* __restrict__ values, Key* __restrict__ keys, const int len, Key keyBefore)
+__global__ void k_splitAndSort(T* __restrict__ values, Key* __restrict__ keys, const int len)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	cg::grid_group g = cg::this_grid();
+
+	Key keyBefore = 0;
+	if (idx < len)
+	{
+		keyBefore = keys[idx];
+	}
+	splitAndSort(values, keys, len, keyBefore);
+}
+
+template<typename T, typename Key>
+__device__ void compact(T* __restrict__ values, Key* __restrict__ keys, const int len, Key keyBefore, int* newLen)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	bool active = idx < len;
@@ -88,9 +102,11 @@ __device__ void compact(T* __restrict__ values, Key* __restrict__ keys, const in
 	prefixSum(keys, len);
 
 	int oneBefore;
+	int total;
 	if (active)
 	{
 		oneBefore = keys[idx];
+		total = keys[len - 1];
 	}
 	g.sync();
 
@@ -103,10 +119,29 @@ __device__ void compact(T* __restrict__ values, Key* __restrict__ keys, const in
 		}
 	}
 	g.sync();
+
+	if (idx == 0)
+	{
+		*newLen = total;
+	}
 }
 
 template<typename T, typename Key>
-__global__ void compactIndices(Key* __restrict__ keys, const int len, Key keyBefore, T* __restrict__ values)
+__global__ void k_compact(T* __restrict__ values, Key* __restrict__ keys, const int len, int* newLen)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	cg::grid_group g = cg::this_grid();
+
+	Key keyBefore = 0;
+	if (idx < len)
+	{
+		keyBefore = keys[idx];
+	}
+	compact(values, keys, len, keyBefore, newLen);
+}
+
+template<typename T, typename Key>
+__device__ void compactIndices(Key* __restrict__ keys, const int len, Key keyBefore, T* __restrict__ values, int* newLen)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	bool active = idx < len;
@@ -122,9 +157,11 @@ __global__ void compactIndices(Key* __restrict__ keys, const int len, Key keyBef
 	prefixSum(keys, len);
 
 	int oneBefore;
+	int total;
 	if (active)
 	{
 		oneBefore = keys[idx];
+		total = keys[len - 1];
 	}
 	g.sync();
 
@@ -137,34 +174,45 @@ __global__ void compactIndices(Key* __restrict__ keys, const int len, Key keyBef
 		}
 	}
 	g.sync();
+
+	if (idx == 0)
+	{
+		*newLen = total;
+	}
 }
 
 template<typename T, typename Key>
-__device__ void partitionByBit(T* __restrict__ values, Key* __restrict__ keys, const int len, const int bit)
+__global__ void k_compactIndices(Key* __restrict__ keys, const int len, T* __restrict__ values, int* newLen)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	cg::grid_group g = cg::this_grid();
+
+	Key keyBefore = 0;
+	if (idx < len)
+	{
+		keyBefore = keys[idx];
+	}
+	compactIndices(keys, len, keyBefore, values, newLen);
+}
+
+template<typename T, typename Key>
+__global__ void k_radixSortByKey(T* __restrict__ values, Key* __restrict__ keys, const int len)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	bool active = idx < len;
 	cg::grid_group g = cg::this_grid();
 
-	Key keyBefore = 0;
-	if (active)
-	{
-		keyBefore = keys[idx];
-		keys[idx] = (keyBefore >> bit) & 1;
-	}
-
-	g.sync();
-
-	splitAndSort(values, keys, len, keyBefore);
-}
-
-template<typename T, typename Key>
-__global__ void radixSortByKey(T* __restrict__ values, Key* __restrict__ keys, const int len)
-{
-	cg::grid_group g = cg::this_grid();
 	for (int bit = 0; bit < sizeof(keys[0]) * 8; bit++)
 	{
-		partitionByBit(values, keys, len, bit);
+		Key keyBefore = 0;
+		if (active)
+		{
+			keyBefore = keys[idx];
+			keys[idx] = (keyBefore >> bit) & 1;
+		}
+		g.sync();
+
+		splitAndSort(values, keys, len, keyBefore);
 		g.sync();
 	}
 }

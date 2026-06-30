@@ -4,6 +4,8 @@
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;
 
+#include "Cell.h"
+
 __device__ uint32_t dilate10(const uint32_t value) {
 	uint32_t x;
 	x = value & 0x03FF;
@@ -72,32 +74,58 @@ __global__ void setHeadFlags(const uint64_t* __restrict__ maskedKeys, const int 
 	headFlags[idx] = (idx == 0) || (maskedKeys[idx - 1] != maskedKeys[idx]);
 }
 
-__global__ void getGroupSizes(const int* __restrict__ groupStarts, const int numGroups, const int len, int* __restrict__ groupSizes)
+__global__ void getGroupSizes(const int* __restrict__ groupStarts, const int* numGroups, const int len, int* __restrict__ groupSizes)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= numGroups) return;
+	if (idx >= *numGroups) return;
 
-	groupSizes[idx] = ((idx == numGroups - 1) ? len : groupStarts[idx + 1]) - groupSizes[idx];
+	groupSizes[idx] = ((idx == *numGroups - 1) ? len : groupStarts[idx + 1]) - groupStarts[idx];
 }
 
-__global__ void classifyGroups(const int* __restrict__ activeList, const int* __restrict__ groupStarts, const int* __restrict__ groupSizes, const int numGroups)
-{
-}
-
-__global__ void setFlagged(const int* __restrict__ activeList, const int len, bool* __restrict__ flagged)
+__global__ void classifyGroups(const int* __restrict__ activeList, const int* __restrict__ groupStarts, const int* __restrict__ groupSizes, const int* numGroups,
+								const uint64_t* __restrict__ maskedKeys, int level, int NLeaf, int* __restrict__ flagged,
+								Cell* __restrict__ cells, int* __restrict__ cellCount, int* __restrict__ leafParticles, int* __restrict__ leafParticleCount)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	bool active = idx < len;
-	cg::grid_group g = cg::this_grid();
+	if (idx >= *numGroups) return;
 
-	bool value;
-	if (active)
+	int start = groupStarts[idx];
+	int count = groupSizes[idx];
+
+	uint64_t key = maskedKeys[start];
+	int cellSlot = atomicAdd(cellCount, 1);
+	Cell cell;
+	cell.key = key;
+	cell.level = level;
+	cell.count = 0;
+	cell.start = 0;
+
+	if (count <= NLeaf)
 	{
-		value = flagged[activeList[idx]];
+		cell.type = LEAF;
+		int leafStart = atomicAdd(leafParticleCount, count);
+		cell.start = leafStart;
+		cell.count = count;
+
+		for (int i = 0; i < count; i++)
+		{
+			int particle = activeList[start + i];
+			leafParticles[leafStart + i] = particle;
+			flagged[particle] = true;
+		}
 	}
-	g.sync();
-	if (active)
+	else
 	{
-		flagged[idx] = !value;
+		cell.type = NODE;
 	}
+
+	cells[cellSlot] = cell;
+}
+
+__global__ void setCompactFlags(const int* __restrict__ activeList, const int len, const int* __restrict__ flagged, int* __restrict__ out)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= len) return;
+
+	out[idx] = !flagged[activeList[idx]];
 }

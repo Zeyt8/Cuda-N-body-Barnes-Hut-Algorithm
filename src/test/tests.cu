@@ -64,18 +64,6 @@ bool testPrefixSum()
 	return true;
 }
 
-__global__ static void testSplitAndSortKernel(int* values, int* keys, int len)
-{
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-
-	int keyBefore = 0;
-	if (idx < len)
-	{
-		keyBefore = keys[idx];
-	}
-	splitAndSort<int, int>(values, keys, len, keyBefore);
-}
-
 bool testSplitAndSort()
 {
 	int len = 5000;
@@ -103,7 +91,7 @@ bool testSplitAndSort()
 	void* kernelArgs[] = { &d_values, &d_keys, &len };
 	int threadsPerBlock = 256;
 	int blocks = cuda::ceil_div(len, threadsPerBlock);
-	cudaLaunchCooperativeKernel(testSplitAndSortKernel, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+	cudaLaunchCooperativeKernel(k_splitAndSort<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
 
 	for (int i = 0; i < len; i++)
 	{
@@ -143,18 +131,6 @@ bool testSplitAndSort()
 	return true;
 }
 
-__global__ static void testCompactKernel(int* values, int* keys, int len)
-{
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-
-	int keyBefore = 0;
-	if (idx < len)
-	{
-		keyBefore = keys[idx];
-	}
-	compact<int, int>(values, keys, len, keyBefore);
-}
-
 bool testCompact()
 {
 	int len = 5000;
@@ -179,15 +155,17 @@ bool testCompact()
 
 	int* d_values;
 	int* d_keys;
+	int* d_newLen;
 	cudaMalloc(&d_values, len * sizeof(int));
 	cudaMalloc(&d_keys, len * sizeof(int));
+	cudaMalloc(&d_newLen, sizeof(int));
 	cudaMemcpy(d_values, h_testValues, len * sizeof(int), cudaMemcpyDefault);
 	cudaMemcpy(d_keys, h_testKeys, len * sizeof(int), cudaMemcpyDefault);
 
-	void* kernelArgs[] = { &d_values, &d_keys, &len };
+	void* kernelArgs[] = { &d_values, &d_keys, &len, &d_newLen };
 	int threadsPerBlock = 256;
 	int blocks = cuda::ceil_div(len, threadsPerBlock);
-	cudaLaunchCooperativeKernel(testCompactKernel, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+	cudaLaunchCooperativeKernel(k_compact<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
 
 	for (int i = 0; i < len; i++)
 	{
@@ -224,7 +202,11 @@ bool testCompact()
 		}
 	}
 
-	return true;
+	int* h_newLen;
+	cudaMallocHost(&h_newLen, sizeof(int));
+	cudaMemcpy(h_newLen, d_newLen, sizeof(int), cudaMemcpyDefault);
+
+	return newCount == *h_newLen;
 }
 
 bool testRadixSort()
@@ -251,7 +233,7 @@ bool testRadixSort()
 	void* kernelArgs[] = { &d_values, &d_keys, &len };
 	int threadsPerBlock = 256;
 	int blocks = cuda::ceil_div(len, threadsPerBlock);
-	cudaLaunchCooperativeKernel(radixSortByKey<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+	cudaLaunchCooperativeKernel(k_radixSortByKey<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
 
 	for (int i = 0; i < len; i++)
 	{
