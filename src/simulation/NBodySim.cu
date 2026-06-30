@@ -29,10 +29,10 @@ NBodySim::NBodySim(int bodyCount)
 	std::random_device rd;
 	std::mt19937 rng(rd());
 	std::uniform_real_distribution<float> posDist(domainMin, domainMax);
-	std::uniform_real_distribution<float> massDist(100, 200);
+	std::uniform_real_distribution<float> massDist(100, 10000);
 	for (int i = 0; i < bodyCount; i++)
 	{
-		_h_particleInfos[i] = make_float4(posDist(rng), posDist(rng), 0, massDist(rng));
+		_h_particleInfos[i] = make_float4(posDist(rng), 0, posDist(rng), massDist(rng));
 	}
 
 	cudaMemcpy(_d_particleInfos, _h_particleInfos, bodyCount * sizeof(float4), cudaMemcpyDefault);
@@ -72,16 +72,16 @@ void NBodySim::Simulate()
 		getMaskedValues<<<blocks, threadsPerBlock>>>(_keys, _activeList, len, level, _maskedKeys);
 		cudaDeviceSynchronize();
 
-		void* kernelArgs[] = { &_activeList, &_maskedKeys, &len };
-		cudaLaunchCooperativeKernel(radixSortByKey<int, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+		void* kernelArgs1[] = { &_activeList, &_maskedKeys, &len };
+		cudaLaunchCooperativeKernel(radixSortByKey<int, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs1);
 		cudaDeviceSynchronize();
 
 		setHeadFlags<<<blocks, threadsPerBlock>>>(_maskedKeys, len, _headFlags);
 		cudaDeviceSynchronize();
 
 		int dummyKey1 = 0;
-		void* kernelArgs[] = { &_headFlags, &len, &dummyKey1, &_groupStarts };
-		cudaLaunchCooperativeKernel(compactIndices<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+		void* kernelArgs2[] = { &_headFlags, &len, &dummyKey1, &_groupStarts };
+		cudaLaunchCooperativeKernel(compactIndices<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs2);
 		cudaDeviceSynchronize();
 
 		// TODO: this is wrong, _headFlags is on the GPU
@@ -100,8 +100,8 @@ void NBodySim::Simulate()
 		classifyGroups<<<blocks, threadsPerBlock>>>(_activeList, _groupStarts, groupSizes, numGroups);
 		cudaDeviceSynchronize();
 
-		void* kernelArgs[] = { &_activeList, &len, &_flagged };
-		cudaLaunchCooperativeKernel(setFlagged, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+		void* kernelArgs3[] = { &_activeList, &len, &_flagged };
+		cudaLaunchCooperativeKernel(setFlagged, dim3(blocks), dim3(threadsPerBlock), kernelArgs3);
 		cudaDeviceSynchronize();
 
 		// TODO: this is wrong, _flagged is on the GPU
@@ -115,16 +115,12 @@ void NBodySim::Simulate()
 		}
 
 		bool dummyKey2 = 0;
-		void* kernelArgs[] = { &_activeList, &_flagged, &len, &dummyKey2 };
-		cudaLaunchCooperativeKernel(compact<int, bool>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+		void* kernelArgs4[] = { &_activeList, &_flagged, &len, &dummyKey2 };
+		cudaLaunchCooperativeKernel(compact<int, bool>, dim3(blocks), dim3(threadsPerBlock), kernelArgs4);
 		cudaDeviceSynchronize();
 
 		len = newLen;
 
 		level++;
 	}
-}
-
-void NBodySim::Render(uchar4* pbo)
-{
 }

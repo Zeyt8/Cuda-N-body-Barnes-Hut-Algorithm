@@ -8,7 +8,7 @@ public:
 	NBodySim(int bodyCount);
 	~NBodySim();
 	void Simulate();
-	void Render(uchar4* pbo);
+	float4* GetBodyInfos() { return _d_particleInfos; }
 
 private:
 	int _bodyCount = 0;

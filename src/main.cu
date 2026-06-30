@@ -15,6 +15,8 @@ extern "C" {
 #include <iostream>
 
 #include "rendering/RenderSurface.h"
+#include "rendering/Camera.h"
+#include "rendering/SimDraw.h"
 #include "simulation/NBodySim.h"
 #include "test/tests.h"
 
@@ -40,7 +42,7 @@ int main()
     std::cout << "Test compact: " << (testCompact() ? "PASSED" : "FAILED") << "\n";
     std::cout << "Test radix sort: " << (testRadixSort() ? "PASSED" : "FAILED") << "\n";
 
-    int width = 1080;
+    int width = 720;
     int height = 720;
     GLFWwindow* window = initWindow(width, height);
     cudaSetDevice(0);
@@ -50,13 +52,15 @@ int main()
     const GLubyte* r = glGetString(GL_RENDERER);
     std::cout << "GPU: " << r << std::endl;
 
-    NBodySim sim = NBodySim(2000);
+    Camera cam = Camera(float3(500, 1200, 500), float3(0, -1, 0), float3(0, 0, 1), 1.0f);
+    NBodySim sim = NBodySim(200);
+    SimDraw drawer = SimDraw(width, height, cam, sim.GetBodyInfos(), 200);
 
     while (!glfwWindowShouldClose(window)) {
         uchar4* devPtr = renderSurface.MapCudaResource();
 
-        sim.Simulate();
-        sim.Render(devPtr);
+        //sim.Simulate();
+        drawer.Render(devPtr);
 
         renderSurface.UnmapCudaResource();
         glClear(GL_COLOR_BUFFER_BIT);

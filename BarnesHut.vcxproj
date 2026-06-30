@@ -92,16 +92,20 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="src\main.cu" />
+    <CudaCompile Include="src\rendering\SimDraw.cu" />
     <CudaCompile Include="src\simulation\NBodySim.cu" />
     <CudaCompile Include="src\test\tests.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\rendering\Camera.h" />
     <ClInclude Include="src\rendering\RenderSurface.h" />
     <ClInclude Include="src\rendering\shader_utils.h" />
+    <ClInclude Include="src\rendering\SimDraw.h" />
     <ClInclude Include="src\simulation\NBodySim.h" />
     <ClInclude Include="src\simulation\NBodySimKernels.h" />
     <ClInclude Include="src\simulation\utils.h" />
     <ClInclude Include="src\test\tests.h" />
+    <ClInclude Include="src\utils\float3_helpers.cuh" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\rendering\RendererSurface.cpp" />
