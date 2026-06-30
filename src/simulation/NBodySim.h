@@ -6,6 +6,7 @@ class NBodySim
 {
 public:
 	NBodySim(int bodyCount);
+	~NBodySim();
 	void Simulate();
 	void Render(uchar4* pbo);
 
@@ -14,5 +15,9 @@ private:
 	float4* _h_particleInfos = nullptr;
 	float4* _d_particleInfos = nullptr;
 	uint64_t* _keys = nullptr;
+	bool* _flagged = nullptr;
+	int* _activeList = nullptr;
 	uint64_t* _maskedKeys = nullptr;
+	int* _headFlags = nullptr;
+	int* _groupStarts = nullptr;
 };

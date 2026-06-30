@@ -106,6 +106,40 @@ __device__ void compact(T* __restrict__ values, Key* __restrict__ keys, const in
 }
 
 template<typename T, typename Key>
+__device__ void compactIndices(Key* __restrict__ keys, const int len, Key keyBefore, T* __restrict__ values)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	bool active = idx < len;
+	cg::grid_group g = cg::this_grid();
+
+	int b_i;
+	if (active)
+	{
+		b_i = keys[idx];
+	}
+	g.sync();
+
+	prefixSum(keys, len);
+
+	int oneBefore;
+	if (active)
+	{
+		oneBefore = keys[idx];
+	}
+	g.sync();
+
+	if (active)
+	{
+		if (b_i)
+		{
+			values[oneBefore - 1] = idx;
+			keys[oneBefore - 1] = keyBefore;
+		}
+	}
+	g.sync();
+}
+
+template<typename T, typename Key>
 __device__ void partitionByBit(T* __restrict__ values, Key* __restrict__ keys, const int len, const int bit)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;

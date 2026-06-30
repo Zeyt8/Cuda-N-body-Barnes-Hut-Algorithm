@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
 
 __device__ uint32_t dilate10(const uint32_t value) {
 	uint32_t x;
@@ -43,13 +45,59 @@ __global__ void computeMortonKeys(const float4* __restrict__ values, const int l
 	keys[idx] = key;
 }
 
-__global__ void getMaskedValues(const uint64_t* __restrict__ keys, const int len, const int level, uint64_t* __restrict__ masked_keys)
+__global__ void initActiveList(int* list, const int len)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= len) return;
+
+	list[idx] = idx;
+}
+
+__global__ void getMaskedValues(const uint64_t* __restrict__ keys, const int* __restrict__ activeList, const int len, const int level, uint64_t* __restrict__ maskedKeys)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (idx >= len) return;
 
 	int bits = 3 * (level + 1);
-	uint64_t bitMask = (1 << bits) - 1;
+	uint64_t bitMask = (uint64_t{1} << bits) - 1;
 	int shift = 60 - bits;
-	masked_keys[idx] = keys[idx] & (bitMask << shift);
+	maskedKeys[idx] = keys[activeList[idx]] & (bitMask << shift);
+}
+
+__global__ void setHeadFlags(const uint64_t* __restrict__ maskedKeys, const int len, int* __restrict__ headFlags)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= len) return;
+
+	headFlags[idx] = (idx == 0) || (maskedKeys[idx - 1] != maskedKeys[idx]);
+}
+
+__global__ void getGroupSizes(const int* __restrict__ groupStarts, const int numGroups, const int len, int* __restrict__ groupSizes)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= numGroups) return;
+
+	groupSizes[idx] = ((idx == numGroups - 1) ? len : groupStarts[idx + 1]) - groupSizes[idx];
+}
+
+__global__ void classifyGroups(const int* __restrict__ activeList, const int* __restrict__ groupStarts, const int* __restrict__ groupSizes, const int numGroups)
+{
+}
+
+__global__ void setFlagged(const int* __restrict__ activeList, const int len, bool* __restrict__ flagged)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	bool active = idx < len;
+	cg::grid_group g = cg::this_grid();
+
+	bool value;
+	if (active)
+	{
+		value = flagged[activeList[idx]];
+	}
+	g.sync();
+	if (active)
+	{
+		flagged[idx] = !value;
+	}
 }
