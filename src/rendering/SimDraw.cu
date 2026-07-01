@@ -6,8 +6,11 @@
 #include <iostream>
 
 #include "utils/float3_helpers.cuh"
+#include "simulation/utils.h"
 
 #define PI 3.1415926535897932385f
+const int domainMin = 0;
+const int domainMax = 5000;
 
 __device__ static inline int idx(int x, int y, int width)
 {
@@ -71,7 +74,7 @@ __host__ __device__ static inline uint32_t getRandom(uint32_t& state)
 
 __device__ static float hitBody(const float4& body, const float3& rayCenter, const float3& rayDir) {
 	float3 center = make_float3(body.x, body.y, body.z);
-	float radius = cbrtf(body.w * 3 / 4 / PI);
+	float radius = cbrtf(body.w * 3.0f / 4.0f / PI) * 100;
 
 	float3 oc = center - rayCenter;
 	float a = lengthSquared(rayDir);
@@ -80,34 +83,6 @@ __device__ static float hitBody(const float4& body, const float3& rayCenter, con
 	float discriminant = h * h - a * c;
 
 	return (discriminant < 0) * -1 + (discriminant >= 0) * (h - sqrtf(discriminant)) / a;
-}
-
-__host__ __device__ static uint32_t undilate10(uint32_t x)
-{
-	x &= 0x49249249;
-	x = (x | (x >> 2)) & 0xC30C30C3;
-	x = (x | (x >> 4)) & 0x0F00F00F;
-	x = (x | (x >> 8)) & 0xFF0000FF;
-	x = (x | (x >> 16)) & 0x000003FF;
-	return x;
-}
-
-__host__ __device__ static void decodeMortonKey(uint64_t key, int level, uint32_t& ix, uint32_t& iy, uint32_t& iz)
-{
-	int bits = 3 * (level + 1);
-	uint64_t n = key >> (60 - bits);
-
-	uint32_t xlo = undilate10((uint32_t)(n & 0x3FFFFFFF));
-	uint32_t xhi = undilate10((uint32_t)((n >> 30) & 0x3FFFFFFF));
-	ix = xlo | (xhi << 10);
-
-	uint32_t ylo = undilate10((uint32_t)((n >> 1) & 0x3FFFFFFF));
-	uint32_t yhi = undilate10((uint32_t)((n >> 31) & 0x3FFFFFFF));
-	iy = ylo | (yhi << 10);
-
-	uint32_t zlo = undilate10((uint32_t)((n >> 2) & 0x3FFFFFFF));
-	uint32_t zhi = undilate10((uint32_t)((n >> 32) & 0x3FFFFFFF));
-	iz = zlo | (zhi << 10);
 }
 
 __device__ static float hitWireBox(float3 boxMin, float3 boxMax, float3 rayOrigin, float3 rayDir, float edgeThickness)
@@ -159,7 +134,7 @@ __global__ static void raytrace(const float3 rayOrigin, const float3* __restrict
 
 	float3 color = make_float3(0, 0, 0);
 	float3 backgroundColor = make_float3(0, 0, 0);
-	int sampleCount = 10;
+	int sampleCount = 5;
 	for (int sample = 0; sample < sampleCount; sample++)
 	{
 		float3 dir = initialDir;
@@ -180,7 +155,7 @@ __global__ static void raytrace(const float3 rayOrigin, const float3* __restrict
 				/*boxMin.y + cellSize*/ 1,
 				boxMin.z + cellSize);
 
-			float p = hitWireBox(boxMin, boxMax, rayOrigin, dir, 2.0f);
+			float p = hitWireBox(boxMin, boxMax, rayOrigin, dir, 5.0f);
 			if (p >= 0)
 			{
 				float3 wireColor = (cells[i].type == LEAF)
@@ -217,7 +192,7 @@ void SimDraw::Render(uchar4* pbo)
 	dim3 grid(cuda::ceil_div(_width, block.x), cuda::ceil_div(_height, block.y));
 	uint64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
-	raytrace<<<grid, block>>>(_camera.pos, _rayDirs, _width, _height, _pixelDeltaU, _pixelDeltaV, _bodyInfos, _bodyCount, _cells, _cellCount, 0, 1000, ms, pbo);
+	raytrace<<<grid, block>>>(_camera.pos, _rayDirs, _width, _height, _pixelDeltaU, _pixelDeltaV, _bodyInfos, _bodyCount, _cells, _cellCount, domainMin, domainMax, ms, pbo);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(end);

@@ -13,6 +13,7 @@ extern "C" {
 #include <GLFW/glfw3.h>
 
 #include <iostream>
+#include <chrono>
 
 #include "rendering/RenderSurface.h"
 #include "rendering/Camera.h"
@@ -52,14 +53,18 @@ int main()
     const GLubyte* r = glGetString(GL_RENDERER);
     std::cout << "GPU: " << r << std::endl;
 
-    Camera cam = Camera(float3(500, 1200, 500), float3(0, -1, 0), float3(0, 0, 1), 1.0f);
-    NBodySim sim = NBodySim(1000);
-    SimDraw drawer = SimDraw(width, height, cam, sim.GetBodyInfos(), 1000, sim.GetCells(), sim.GetCellCount());
+    Camera cam = Camera(float3(2500, 5500, 2500), float3(0, -1, 0), float3(0, 0, 1), 1.0f);
+    int bodyCount = 5;
+    NBodySim sim = NBodySim(bodyCount);
+    SimDraw drawer = SimDraw(width, height, cam, sim.GetBodyInfos(), bodyCount, sim.GetCells(), sim.GetCellCount());
 
+    auto lastTime = std::chrono::high_resolution_clock::now();
     while (!glfwWindowShouldClose(window)) {
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float delta = std::chrono::duration<float>(currentTime - lastTime).count();
         uchar4* devPtr = renderSurface.MapCudaResource();
 
-        sim.Simulate();
+        sim.Simulate(delta);
         drawer.Render(devPtr);
 
         renderSurface.UnmapCudaResource();

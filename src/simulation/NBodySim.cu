@@ -10,7 +10,7 @@
 #include "utils.h"
 
 const int domainMin = 0;
-const int domainMax = 1000;
+const int domainMax = 5000;
 const int NLeaf = 16;
 
 NBodySim::NBodySim(int bodyCount)
@@ -23,7 +23,10 @@ NBodySim::NBodySim(int bodyCount)
 
 	_bodyCount = bodyCount;
 
-	cudaMallocHost(&_h_particleInfos, _bodyCount * sizeof(float4));
+	float4* h_particleInfos;
+	float3* h_initVelocities;
+	cudaMallocHost(&h_particleInfos, _bodyCount * sizeof(float4));
+	cudaMallocHost(&h_initVelocities, _bodyCount * sizeof(float3));
 	cudaMalloc(&_d_particleInfos, _bodyCount * sizeof(float4));
 	cudaMalloc(&_keys, _bodyCount * sizeof(uint64_t));
 	cudaMalloc(&_flagged, _bodyCount * sizeof(bool));
@@ -42,18 +45,43 @@ NBodySim::NBodySim(int bodyCount)
 	cudaMalloc(&_leafParticleCount, sizeof(int));
 	cudaMemset(_leafParticleCount, 0, sizeof(int));
 	cudaMalloc(&_flaggedTemp, _bodyCount * sizeof(int));
+	cudaMalloc(&_leafIndices, _bodyCount * sizeof(int));
+	cudaMalloc(&_leafCount, sizeof(int));
+	cudaMemset(_leafCount, 0, sizeof(int));
+	cudaMalloc(&_velocities, bodyCount * sizeof(float3));
+	cudaMalloc(&_accelerations, bodyCount * sizeof(float3));
+	cudaMemset(_accelerations, 0, bodyCount * sizeof(float3));
+	cudaMalloc(&_accelerationsPrev, bodyCount * sizeof(float3));
+	cudaMemset(_accelerationsPrev, 0, bodyCount * sizeof(float3));
 
 	std::random_device rd;
 	std::mt19937 rng(rd());
-	std::uniform_real_distribution<float> posDist(domainMin, domainMax);
-	std::uniform_real_distribution<float> massDist(100, 10000);
-	for (int i = 0; i < bodyCount; i++)
+	std::uniform_real_distribution<float> posDist(domainMin + (domainMax - domainMin) / 10, domainMax - (domainMax - domainMin) / 10);
+	std::uniform_real_distribution<float> massDist(0, 1);
+	h_particleInfos[0] = make_float4(domainMax / 2 + 10, 0, domainMax / 2 + 10, 10);
+	for (int i = 1; i < bodyCount; i++)
 	{
-		_h_particleInfos[i] = make_float4(posDist(rng), 0, posDist(rng), massDist(rng));
+		double r = massDist(rng);
+		double biased = std::pow(r, 10);
+		double scaled = 0.1f + biased * (1 - 0.1f);
+		h_particleInfos[i] = make_float4(posDist(rng), 0, posDist(rng), scaled);
 	}
 
-	cudaMemcpy(_d_particleInfos, _h_particleInfos, bodyCount * sizeof(float4), cudaMemcpyDefault);
-	cudaFreeHost(_h_particleInfos);
+	h_initVelocities[0] = make_float3(0, 0, 0);
+	for (int i = 1; i < bodyCount; i++)
+	{
+		float dx = h_particleInfos[i].x - (domainMax + domainMin) / 2.0f;
+		float dz = h_particleInfos[i].z - (domainMax + domainMin) / 2.0f;
+		float r = sqrtf(dx * dx + dz * dz);
+		float v = sqrtf(10 / r);
+		float3 vel = make_float3(dz / r, 0.0f, -dx / r) * v;
+		h_initVelocities[i] = vel;
+	}
+	cudaMemcpy(_velocities, h_initVelocities, bodyCount * sizeof(float3), cudaMemcpyDefault);
+
+	cudaMemcpy(_d_particleInfos, h_particleInfos, bodyCount * sizeof(float4), cudaMemcpyDefault);
+	cudaFreeHost(h_initVelocities);
+	cudaFreeHost(h_particleInfos);
 
 	cudaEventRecord(end);
 	cudaEventSynchronize(end);
@@ -83,23 +111,47 @@ NBodySim::~NBodySim()
 	cudaFree(_leafParticles);
 	cudaFree(_leafParticleCount);
 	cudaFree(_flaggedTemp);
+	cudaFree(_leafIndices);
+	cudaFree(_leafCount);
+	cudaFree(_accelerations);
+	cudaFree(_velocities);
+	cudaFree(_accelerationsPrev);
 }
 
-void NBodySim::Simulate()
+void NBodySim::Simulate(float delta)
 {
+	int threadsPerBlock = 256;
+	int bodyBlocks = cuda::ceil_div(_bodyCount, threadsPerBlock);
+
+	correctVelocities<<<bodyBlocks, threadsPerBlock>>>(_velocities, _bodyCount, _accelerations, _accelerationsPrev, delta);
+	cudaDeviceSynchronize();
+
+	movePos<<<bodyBlocks, threadsPerBlock>>>(_d_particleInfos, _bodyCount, _velocities, _accelerations, delta);
+	cudaDeviceSynchronize();
+
 	cudaEvent_t startMorton, endMorton;
 	cudaEventCreate(&startMorton);
 	cudaEventCreate(&endMorton);
 
 	cudaEventRecord(startMorton);
 
-	int threadsPerBlock = 256;
-	int blocks = cuda::ceil_div(_bodyCount, threadsPerBlock);
-	computeMortonKeys<<<blocks, threadsPerBlock>>>(_d_particleInfos, _bodyCount, domainMin, domainMax, _keys);
+	computeMortonKeys<<<bodyBlocks, threadsPerBlock>>>(_d_particleInfos, _bodyCount, domainMin, domainMax, _keys);
 	cudaDeviceSynchronize();
 
 	void* kernelArgs[] = { &_d_particleInfos, &_keys, &_bodyCount };
-	cudaLaunchCooperativeKernel(k_radixSortByKey<float4, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs);
+	cudaLaunchCooperativeKernel(k_radixSortByKey<float4, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), kernelArgs);
+	cudaDeviceSynchronize();
+
+	void* argsSort1[] = { &_velocities, &_keys, &_bodyCount };
+	cudaLaunchCooperativeKernel(k_radixSortByKey<float3, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), argsSort1);
+	cudaDeviceSynchronize();
+
+	void* argsSort2[] = { &_accelerations, &_keys, &_bodyCount };
+	cudaLaunchCooperativeKernel(k_radixSortByKey<float3, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), argsSort2);
+	cudaDeviceSynchronize();
+
+	void* argsSort3[] = { &_accelerationsPrev, &_keys, &_bodyCount };
+	cudaLaunchCooperativeKernel(k_radixSortByKey<float3, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), argsSort3);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(endMorton);
@@ -110,75 +162,113 @@ void NBodySim::Simulate()
 
 	cudaEventRecord(startPartition);
 
-	initActiveList<<<blocks, threadsPerBlock>>>(_activeList, _bodyCount);
+	initActiveList<<<bodyBlocks, threadsPerBlock>>>(_activeList, _bodyCount);
 	cudaMemset(_flagged, 0, _bodyCount * sizeof(bool));
 	cudaMemset(_cellCount, 0, sizeof(int));
 	cudaMemset(_leafParticleCount, 0, sizeof(int));
 	cudaMemset(_numGroups, 0, sizeof(int));
 	cudaMemset(_newLen, 0, sizeof(int));
 	int level = 0;
+	int maxLevel = 0;
 	int len = _bodyCount;
 	while (len > 0 && level < 20)
 	{
-		blocks = cuda::ceil_div(len, threadsPerBlock);
+		int activeBlocks = cuda::ceil_div(len, threadsPerBlock);
 
-		getMaskedValues<<<blocks, threadsPerBlock>>>(_keys, _activeList, len, level, _maskedKeys);
+		getMaskedValues<<<activeBlocks, threadsPerBlock>>>(_keys, _activeList, len, level, _maskedKeys);
 		cudaDeviceSynchronize();
 
 		void* kernelArgs1[] = { &_activeList, &_maskedKeys, &len };
-		cudaLaunchCooperativeKernel(k_radixSortByKey<int, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs1);
+		cudaLaunchCooperativeKernel(k_radixSortByKey<int, uint64_t>, dim3(activeBlocks), dim3(threadsPerBlock), kernelArgs1);
 		cudaDeviceSynchronize();
 
-		setHeadFlags<<<blocks, threadsPerBlock>>>(_maskedKeys, len, _headFlags);
+		setHeadFlags<<<activeBlocks, threadsPerBlock>>>(_maskedKeys, len, _headFlags);
 		cudaDeviceSynchronize();
 
 		void* kernelArgs2[] = { &_headFlags, &len, &_groupStarts, &_numGroups };
-		cudaLaunchCooperativeKernel(k_compactIndices<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs2);
+		cudaLaunchCooperativeKernel(k_compactIndices<int, int>, dim3(activeBlocks), dim3(threadsPerBlock), kernelArgs2);
 		cudaDeviceSynchronize();
 
 		int* groupSizes = _headFlags;
-		getGroupSizes<<<blocks, threadsPerBlock>>>(_groupStarts, _numGroups, len, groupSizes);
+		getGroupSizes<<<activeBlocks, threadsPerBlock>>>(_groupStarts, _numGroups, len, groupSizes);
 		cudaDeviceSynchronize();
 
-		classifyGroups<<<blocks, threadsPerBlock>>>(_activeList, _groupStarts, groupSizes, _numGroups, _maskedKeys, level, NLeaf, _flagged, _cells, _cellCount, _leafParticles, _leafParticleCount);
+		classifyGroups<<<activeBlocks, threadsPerBlock>>>(_activeList, _groupStarts, groupSizes, _numGroups, _maskedKeys, level, NLeaf, _flagged, _cells, _cellCount, _leafParticles, _leafParticleCount);
 		cudaDeviceSynchronize();
 		
-		setCompactFlags<<<blocks, threadsPerBlock>>>(_activeList, len, _flagged, _flaggedTemp);
+		setCompactFlags<<<activeBlocks, threadsPerBlock>>>(_activeList, len, _flagged, _flaggedTemp);
 		cudaDeviceSynchronize();
 
 		void* kernelArgs4[] = { &_activeList, &_flaggedTemp, &len, &_newLen };
-		cudaLaunchCooperativeKernel(k_compact<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs4);
+		cudaLaunchCooperativeKernel(k_compact<int, int>, dim3(activeBlocks), dim3(threadsPerBlock), kernelArgs4);
 		cudaDeviceSynchronize();
 		
 		cudaMemcpy(&len, _newLen, sizeof(int), cudaMemcpyDeviceToHost);
 
 		level++;
+		maxLevel = level;
 	}
 
 	int cellCount;
 	cudaMemcpy(&cellCount, _cellCount, sizeof(int), cudaMemcpyDeviceToHost);
-	blocks = cuda::ceil_div(cellCount, threadsPerBlock);
-	extractCellKeys<<<blocks, threadsPerBlock>>>(_cells, cellCount, _maskedKeys);
+	int cellBlocks = cuda::ceil_div(cellCount, threadsPerBlock);
+	extractCellKeys<<<cellBlocks, threadsPerBlock>>>(_cells, cellCount, _maskedKeys);
 	cudaDeviceSynchronize();
 
 	void* kernelArgs1[] = { &_cells, &_maskedKeys, &cellCount };
-	cudaLaunchCooperativeKernel(k_radixSortByKey<Cell, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs1);
+	cudaLaunchCooperativeKernel(k_radixSortByKey<Cell, uint64_t>, dim3(cellBlocks), dim3(threadsPerBlock), kernelArgs1);
 	cudaDeviceSynchronize();
 
-	linkCellsToParents<<<blocks, threadsPerBlock>>>(_cells, cellCount);
+	linkCellsToParents<<<cellBlocks, threadsPerBlock>>>(_cells, cellCount);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(endPartition);
+
+	cudaEvent_t movementStart, movementEnd;
+	cudaEventCreate(&movementStart);
+	cudaEventCreate(&movementEnd);
+
+	cudaEventRecord(movementStart);
+
+	int hLeafCount = 0;
+	cudaMemset(_leafCount, 0, sizeof(int));
+
+	extractLeafIndices<<<cellBlocks, threadsPerBlock>>>(_cells, cellCount, _leafIndices, _leafCount);
+	cudaDeviceSynchronize();
+
+	cudaMemcpy(&hLeafCount, _leafCount, sizeof(int), cudaMemcpyDeviceToHost);
+
+	setLeafMoments<<<cellBlocks, threadsPerBlock>>>(_cells, cellCount, _d_particleInfos, _leafParticles);
+	cudaDeviceSynchronize();
+
+	for (int level = maxLevel - 1; level >= 0; level--)
+	{
+		setNodeMoments<<<cellBlocks, threadsPerBlock>>>(_cells, cellCount, level);
+		cudaDeviceSynchronize();
+	}
+
+	cudaMemcpy(_accelerationsPrev, _accelerations, _bodyCount * sizeof(float3), cudaMemcpyDefault);
+
+	const float theta = 0.1f;
+	cudaMemset(_accelerations, 0, _bodyCount * sizeof(float3));
+	computeVelocities<<<hLeafCount, threadsPerBlock>>>(_cells, cellCount, _leafIndices, _d_particleInfos, _leafParticles, _accelerations, theta, domainMin, domainMax);
+	cudaDeviceSynchronize();
+
+	cudaEventRecord(movementEnd);
 
 	cudaEventSynchronize(endMorton);
 	cudaEventSynchronize(endPartition);
 
 	float timeMorton;
 	cudaEventElapsedTime(&timeMorton, startMorton, endMorton);
-	std::cout << "\x1b[3A" << std::flush;
+	std::cout << "\x1b[4A" << std::flush;
 	std::cout << "Morton keys and sort time: " << timeMorton << " ms\x1b[K\n" << std::flush;
 
 	float timePartition;
 	cudaEventElapsedTime(&timePartition, startPartition, endPartition);
 	std::cout << "Partition time: " << timePartition << " ms\x1b[K\n" << std::flush;
+
+	float timeMovement;
+	cudaEventElapsedTime(&timeMovement, movementStart, movementEnd);
+	std::cout << "Movement time: " << timeMovement << " ms\x1b[K\n" << std::flush;
 }

@@ -15,4 +15,10 @@ struct Cell
 	int type;
 	int start;
 	int count;
+
+	double mass;
+	double3 com;
+
+	double Qxx, Qyy;
+	double Qxy, Qxz, Qyz;
 };

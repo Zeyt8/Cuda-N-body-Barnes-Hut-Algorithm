@@ -4,6 +4,56 @@
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;
 
+__device__ static uint32_t dilate10(const uint32_t value)
+{
+	uint32_t x;
+	x = value & 0x03FF;
+	x = ((x << 16) + x) & 0xFF0000FF;
+	x = ((x << 8) + x) & 0x0F00F00F;
+	x = ((x << 4) + x) & 0xC30C30C3;
+	x = ((x << 2) + x) & 0x49249249;
+	return x;
+}
+
+__device__ static uint64_t dilate20(const uint32_t value)
+{
+	uint32_t lo = value & 0x3FF;
+	uint32_t hi = (value >> 10) & 0x3FF;
+
+	uint64_t dlo = dilate10(lo);
+	uint64_t dhi = dilate10(hi);
+
+	return dlo | (dhi << 30);
+}
+
+__host__ __device__ static uint32_t undilate10(uint32_t x)
+{
+	x &= 0x49249249;
+	x = (x | (x >> 2)) & 0xC30C30C3;
+	x = (x | (x >> 4)) & 0x0F00F00F;
+	x = (x | (x >> 8)) & 0xFF0000FF;
+	x = (x | (x >> 16)) & 0x000003FF;
+	return x;
+}
+
+__host__ __device__ static void decodeMortonKey(uint64_t key, int level, uint32_t& ix, uint32_t& iy, uint32_t& iz)
+{
+	int bits = 3 * (level + 1);
+	uint64_t n = key >> (60 - bits);
+
+	uint32_t xlo = undilate10((uint32_t)(n & 0x3FFFFFFF));
+	uint32_t xhi = undilate10((uint32_t)((n >> 30) & 0x3FFFFFFF));
+	ix = xlo | (xhi << 10);
+
+	uint32_t ylo = undilate10((uint32_t)((n >> 1) & 0x3FFFFFFF));
+	uint32_t yhi = undilate10((uint32_t)((n >> 31) & 0x3FFFFFFF));
+	iy = ylo | (yhi << 10);
+
+	uint32_t zlo = undilate10((uint32_t)((n >> 2) & 0x3FFFFFFF));
+	uint32_t zhi = undilate10((uint32_t)((n >> 32) & 0x3FFFFFFF));
+	iz = zlo | (zhi << 10);
+}
+
 template<typename Key>
 __device__ void prefixSum(Key* values, const int len)
 {

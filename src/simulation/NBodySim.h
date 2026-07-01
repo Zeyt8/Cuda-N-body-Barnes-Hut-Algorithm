@@ -9,14 +9,13 @@ class NBodySim
 public:
 	NBodySim(int bodyCount);
 	~NBodySim();
-	void Simulate();
+	void Simulate(float delta);
 	float4* GetBodyInfos() { return _d_particleInfos; }
 	Cell* GetCells() { return _cells; }
 	int* GetCellCount() { return _cellCount; }
 
 private:
 	int _bodyCount = 0;
-	float4* _h_particleInfos = nullptr;
 	float4* _d_particleInfos = nullptr;
 	uint64_t* _keys = nullptr;
 	bool* _flagged = nullptr;
@@ -31,4 +30,9 @@ private:
 	int* _leafParticles = nullptr;
 	int* _leafParticleCount = nullptr;
 	int* _flaggedTemp = nullptr;
+	int* _leafIndices = nullptr;
+	int* _leafCount = nullptr;
+	float3* _accelerations = nullptr;
+	float3* _velocities = nullptr;
+	float3* _accelerationsPrev = nullptr;
 };
