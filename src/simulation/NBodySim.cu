@@ -26,7 +26,7 @@ NBodySim::NBodySim(int bodyCount)
 	cudaMallocHost(&_h_particleInfos, _bodyCount * sizeof(float4));
 	cudaMalloc(&_d_particleInfos, _bodyCount * sizeof(float4));
 	cudaMalloc(&_keys, _bodyCount * sizeof(uint64_t));
-	cudaMalloc(&_flagged, _bodyCount * sizeof(int));
+	cudaMalloc(&_flagged, _bodyCount * sizeof(bool));
 	cudaMalloc(&_activeList, _bodyCount * sizeof(int));
 	cudaMalloc(&_maskedKeys, _bodyCount * sizeof(uint64_t));
 	cudaMalloc(&_headFlags, _bodyCount * sizeof(int));
@@ -111,15 +111,16 @@ void NBodySim::Simulate()
 	cudaEventRecord(startPartition);
 
 	initActiveList<<<blocks, threadsPerBlock>>>(_activeList, _bodyCount);
+	cudaMemset(_flagged, 0, _bodyCount * sizeof(bool));
+	cudaMemset(_cellCount, 0, sizeof(int));
+	cudaMemset(_leafParticleCount, 0, sizeof(int));
+	cudaMemset(_numGroups, 0, sizeof(int));
+	cudaMemset(_newLen, 0, sizeof(int));
 	int level = 0;
 	int len = _bodyCount;
 	while (len > 0 && level < 20)
 	{
 		blocks = cuda::ceil_div(len, threadsPerBlock);
-
-		cudaMemset(_numGroups, 0, sizeof(int));
-		cudaMemset(_newLen, 0, sizeof(int));
-		cudaMemset(_flagged, 0, _bodyCount * sizeof(bool));
 
 		getMaskedValues<<<blocks, threadsPerBlock>>>(_keys, _activeList, len, level, _maskedKeys);
 		cudaDeviceSynchronize();
@@ -138,7 +139,7 @@ void NBodySim::Simulate()
 		int* groupSizes = _headFlags;
 		getGroupSizes<<<blocks, threadsPerBlock>>>(_groupStarts, _numGroups, len, groupSizes);
 		cudaDeviceSynchronize();
-		
+
 		classifyGroups<<<blocks, threadsPerBlock>>>(_activeList, _groupStarts, groupSizes, _numGroups, _maskedKeys, level, NLeaf, _flagged, _cells, _cellCount, _leafParticles, _leafParticleCount);
 		cudaDeviceSynchronize();
 		
@@ -149,10 +150,23 @@ void NBodySim::Simulate()
 		cudaLaunchCooperativeKernel(k_compact<int, int>, dim3(blocks), dim3(threadsPerBlock), kernelArgs4);
 		cudaDeviceSynchronize();
 		
-		cudaMemcpy(&len, _newLen, sizeof(int), cudaMemcpyDefault);
+		cudaMemcpy(&len, _newLen, sizeof(int), cudaMemcpyDeviceToHost);
 
 		level++;
 	}
+
+	int cellCount;
+	cudaMemcpy(&cellCount, _cellCount, sizeof(int), cudaMemcpyDeviceToHost);
+	blocks = cuda::ceil_div(cellCount, threadsPerBlock);
+	extractCellKeys<<<blocks, threadsPerBlock>>>(_cells, cellCount, _maskedKeys);
+	cudaDeviceSynchronize();
+
+	void* kernelArgs1[] = { &_cells, &_maskedKeys, &cellCount };
+	cudaLaunchCooperativeKernel(k_radixSortByKey<Cell, uint64_t>, dim3(blocks), dim3(threadsPerBlock), kernelArgs1);
+	cudaDeviceSynchronize();
+
+	linkCellsToParents<<<blocks, threadsPerBlock>>>(_cells, cellCount);
+	cudaDeviceSynchronize();
 
 	cudaEventRecord(endPartition);
 

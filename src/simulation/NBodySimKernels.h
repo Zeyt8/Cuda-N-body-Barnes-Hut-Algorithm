@@ -4,6 +4,8 @@
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;
 
+#include <climits>
+
 #include "Cell.h"
 
 __device__ uint32_t dilate10(const uint32_t value) {
@@ -83,7 +85,7 @@ __global__ void getGroupSizes(const int* __restrict__ groupStarts, const int* nu
 }
 
 __global__ void classifyGroups(const int* __restrict__ activeList, const int* __restrict__ groupStarts, const int* __restrict__ groupSizes, const int* numGroups,
-								const uint64_t* __restrict__ maskedKeys, int level, int NLeaf, int* __restrict__ flagged,
+								const uint64_t* __restrict__ maskedKeys, int level, int NLeaf, bool* __restrict__ flagged,
 								Cell* __restrict__ cells, int* __restrict__ cellCount, int* __restrict__ leafParticles, int* __restrict__ leafParticleCount)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -98,7 +100,7 @@ __global__ void classifyGroups(const int* __restrict__ activeList, const int* __
 	cell.key = key;
 	cell.level = level;
 	cell.count = 0;
-	cell.start = 0;
+	cell.start = INT_MAX;
 
 	if (count <= NLeaf)
 	{
@@ -122,10 +124,68 @@ __global__ void classifyGroups(const int* __restrict__ activeList, const int* __
 	cells[cellSlot] = cell;
 }
 
-__global__ void setCompactFlags(const int* __restrict__ activeList, const int len, const int* __restrict__ flagged, int* __restrict__ out)
+__global__ void setCompactFlags(const int* __restrict__ activeList, const int len, const bool* __restrict__ flagged, int* __restrict__ out)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (idx >= len) return;
 
 	out[idx] = !flagged[activeList[idx]];
+}
+
+__global__ void extractCellKeys(const Cell* __restrict__ cells, const int len, uint64_t* __restrict__ keys)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= len) return;
+
+	keys[idx] = cells[idx].key;
+}
+
+__device__ int binarySearchCells(const Cell* __restrict__ cells, const int totalCells, const uint64_t targetKey, const int targetLevel)
+{
+	int lo = 0;
+	int hi = totalCells - 1;
+
+	while (lo <= hi)
+	{
+		int mid = (lo + hi) / 2;
+
+		if (cells[mid].key == targetKey && cells[mid].level == targetLevel)
+		{
+			return mid;
+		}
+
+		if (cells[mid].key < targetKey)
+		{
+			lo = mid + 1;
+		}
+		else
+		{
+			hi = mid - 1;
+		}
+	}
+
+	return -1;
+}
+
+__global__ void linkCellsToParents(Cell* __restrict__ cells, int cellCount)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= cellCount) return;
+
+	Cell cell = cells[idx];
+
+	if (cell.level == 0)
+	{
+		return;
+	}
+
+	int parentLevel = cell.level - 1;
+	int parentBits = 3 * (parentLevel + 1);
+	uint64_t parentMask = ((1ULL << parentBits) - 1ULL) << (60 - parentBits);
+	uint64_t parentKey = cell.key & parentMask;
+
+	int parentIdx = binarySearchCells(cells, cellCount, parentKey, parentLevel);
+
+	atomicAdd(&cells[parentIdx].count, 1);
+	atomicMin(&cells[parentIdx].start, idx);
 }
