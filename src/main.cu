@@ -54,7 +54,7 @@ int main()
     std::cout << "GPU: " << r << std::endl;
 
     Camera cam = Camera(float3(2500, 5500, 2500), float3(0, -1, 0), float3(0, 0, 1), 1.0f);
-    int bodyCount = 5;
+    int bodyCount = 10;
     NBodySim sim = NBodySim(bodyCount);
     SimDraw drawer = SimDraw(width, height, cam, sim.GetBodyInfos(), bodyCount, sim.GetCells(), sim.GetCellCount());
 

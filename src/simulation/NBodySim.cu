@@ -29,6 +29,9 @@ NBodySim::NBodySim(int bodyCount)
 	cudaMallocHost(&h_initVelocities, _bodyCount * sizeof(float3));
 	cudaMalloc(&_d_particleInfos, _bodyCount * sizeof(float4));
 	cudaMalloc(&_keys, _bodyCount * sizeof(uint64_t));
+	cudaMalloc(&_keysVel, _bodyCount * sizeof(uint64_t));
+	cudaMalloc(&_keysAcc, _bodyCount * sizeof(uint64_t));
+	cudaMalloc(&_keysAccOld, _bodyCount * sizeof(uint64_t));
 	cudaMalloc(&_flagged, _bodyCount * sizeof(bool));
 	cudaMalloc(&_activeList, _bodyCount * sizeof(int));
 	cudaMalloc(&_maskedKeys, _bodyCount * sizeof(uint64_t));
@@ -56,15 +59,16 @@ NBodySim::NBodySim(int bodyCount)
 
 	std::random_device rd;
 	std::mt19937 rng(rd());
-	std::uniform_real_distribution<float> posDist(domainMin + (domainMax - domainMin) / 10, domainMax - (domainMax - domainMin) / 10);
+	std::uniform_real_distribution<float> posDist(domainMin + (domainMax - domainMin) / 4, domainMax - (domainMax - domainMin) / 4);
 	std::uniform_real_distribution<float> massDist(0, 1);
-	h_particleInfos[0] = make_float4(domainMax / 2 + 10, 0, domainMax / 2 + 10, 10);
+	int bigMass = 101;
+	h_particleInfos[0] = make_float4(domainMax / 2 + 10, 1, domainMax / 2 + 10, bigMass);
 	for (int i = 1; i < bodyCount; i++)
 	{
 		double r = massDist(rng);
 		double biased = std::pow(r, 10);
 		double scaled = 0.1f + biased * (1 - 0.1f);
-		h_particleInfos[i] = make_float4(posDist(rng), 0, posDist(rng), scaled);
+		h_particleInfos[i] = make_float4(posDist(rng), 1, posDist(rng), scaled);
 	}
 
 	h_initVelocities[0] = make_float3(0, 0, 0);
@@ -73,7 +77,7 @@ NBodySim::NBodySim(int bodyCount)
 		float dx = h_particleInfos[i].x - (domainMax + domainMin) / 2.0f;
 		float dz = h_particleInfos[i].z - (domainMax + domainMin) / 2.0f;
 		float r = sqrtf(dx * dx + dz * dz);
-		float v = sqrtf(10 / r);
+		float v = sqrtf(bigMass / r);
 		float3 vel = make_float3(dz / r, 0.0f, -dx / r) * v;
 		h_initVelocities[i] = vel;
 	}
@@ -99,6 +103,9 @@ NBodySim::~NBodySim()
 {
 	cudaFree(_d_particleInfos);
 	cudaFree(_keys);
+	cudaFree(_keysVel);
+	cudaFree(_keysAcc);
+	cudaFree(_keysAccOld);
 	cudaFree(_flagged);
 	cudaFree(_activeList);
 	cudaFree(_maskedKeys);
@@ -138,19 +145,23 @@ void NBodySim::Simulate(float delta)
 	computeMortonKeys<<<bodyBlocks, threadsPerBlock>>>(_d_particleInfos, _bodyCount, domainMin, domainMax, _keys);
 	cudaDeviceSynchronize();
 
+	cudaMemcpy(_keysVel, _keys, _bodyCount * sizeof(uint64_t), cudaMemcpyDefault);
+	cudaMemcpy(_keysAcc, _keys, _bodyCount * sizeof(uint64_t), cudaMemcpyDefault);
+	cudaMemcpy(_keysAccOld, _keys, _bodyCount * sizeof(uint64_t), cudaMemcpyDefault);
+
 	void* kernelArgs[] = { &_d_particleInfos, &_keys, &_bodyCount };
 	cudaLaunchCooperativeKernel(k_radixSortByKey<float4, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), kernelArgs);
 	cudaDeviceSynchronize();
 
-	void* argsSort1[] = { &_velocities, &_keys, &_bodyCount };
+	void* argsSort1[] = { &_velocities, &_keysVel, &_bodyCount };
 	cudaLaunchCooperativeKernel(k_radixSortByKey<float3, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), argsSort1);
 	cudaDeviceSynchronize();
 
-	void* argsSort2[] = { &_accelerations, &_keys, &_bodyCount };
+	void* argsSort2[] = { &_accelerations, &_keysAcc, &_bodyCount };
 	cudaLaunchCooperativeKernel(k_radixSortByKey<float3, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), argsSort2);
 	cudaDeviceSynchronize();
 
-	void* argsSort3[] = { &_accelerationsPrev, &_keys, &_bodyCount };
+	void* argsSort3[] = { &_accelerationsPrev, &_keysAccOld, &_bodyCount };
 	cudaLaunchCooperativeKernel(k_radixSortByKey<float3, uint64_t>, dim3(bodyBlocks), dim3(threadsPerBlock), argsSort3);
 	cudaDeviceSynchronize();
 

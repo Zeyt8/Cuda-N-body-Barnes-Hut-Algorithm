@@ -74,7 +74,7 @@ __host__ __device__ static inline uint32_t getRandom(uint32_t& state)
 
 __device__ static float hitBody(const float4& body, const float3& rayCenter, const float3& rayDir) {
 	float3 center = make_float3(body.x, body.y, body.z);
-	float radius = cbrtf(body.w * 3.0f / 4.0f / PI) * 100;
+	float radius = cbrtf(body.w * 3.0f / 4.0f / PI) * 50;
 
 	float3 oc = center - rayCenter;
 	float a = lengthSquared(rayDir);
@@ -155,7 +155,15 @@ __global__ static void raytrace(const float3 rayOrigin, const float3* __restrict
 				/*boxMin.y + cellSize*/ 1,
 				boxMin.z + cellSize);
 
-			float p = hitWireBox(boxMin, boxMax, rayOrigin, dir, 5.0f);
+			float4 centerOfMass = make_float4(cells[i].com.x, cells[i].com.y, cells[i].com.z, 0.5f);
+			float p = hitBody(centerOfMass, rayOrigin, dir);
+			if (p >= 0)
+			{
+				color = color + make_float3(1, 0, 0) / sampleCount;
+				break;
+			}
+
+			p = hitWireBox(boxMin, boxMax, rayOrigin, dir, 5.0f);
 			if (p >= 0)
 			{
 				float3 wireColor = (cells[i].type == LEAF)

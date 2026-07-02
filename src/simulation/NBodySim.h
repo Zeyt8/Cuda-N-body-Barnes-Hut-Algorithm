@@ -18,6 +18,9 @@ private:
 	int _bodyCount = 0;
 	float4* _d_particleInfos = nullptr;
 	uint64_t* _keys = nullptr;
+	uint64_t* _keysVel = nullptr;
+	uint64_t* _keysAcc = nullptr;
+	uint64_t* _keysAccOld = nullptr;
 	bool* _flagged = nullptr;
 	int* _activeList = nullptr;
 	uint64_t* _maskedKeys = nullptr;

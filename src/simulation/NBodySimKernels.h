@@ -10,7 +10,7 @@ namespace cg = cooperative_groups;
 #include "simulation/utils.h"
 #include "utils/float3_helpers.cuh"
 
-__constant__ float epsilon = 1.0f;
+__constant__ float epsilon = 2.0f;
 
 __global__ void computeMortonKeys(const float4* __restrict__ values, const int len, const float domainMin, const float domainMax, uint64_t* __restrict__ keys)
 {
@@ -542,6 +542,7 @@ __global__ void movePos(float4* __restrict__ particles, const int particleCount,
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (idx >= particleCount) return;
+	if (particles[idx].w > 100) return;
 
 	float3 posChange = velocities[idx] * deltaTime + accelerations[idx] * 0.5f * deltaTime * deltaTime;
 	float3 velChange = accelerations[idx] * deltaTime;
